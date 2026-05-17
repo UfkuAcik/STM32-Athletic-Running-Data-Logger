@@ -57,9 +57,9 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define EXTI_Nabiz_Pin GPIO_PIN_13
-#define EXTI_Nabiz_GPIO_Port GPIOC
-#define EXTI_Nabiz_EXTI_IRQn EXTI15_10_IRQn
+#define HEART_RATE_EXTI_Pin GPIO_PIN_13
+#define HEART_RATE_EXTI_GPIO_Port GPIOC
+#define HEART_RATE_EXTI_EXTI_IRQn EXTI15_10_IRQn
 #define DS18B20_Pin GPIO_PIN_1
 #define DS18B20_GPIO_Port GPIOA
 #define USART2_TX_GPS_Pin GPIO_PIN_2
@@ -70,12 +70,12 @@ void Error_Handler(void);
 #define SPI_CS_GPIO_Port GPIOB
 #define I2C2_SCL_BME280_Pin GPIO_PIN_10
 #define I2C2_SCL_BME280_GPIO_Port GPIOB
-#define button1_Pin GPIO_PIN_12
-#define button1_GPIO_Port GPIOB
-#define button1_EXTI_IRQn EXTI15_10_IRQn
-#define button2_Pin GPIO_PIN_14
-#define button2_GPIO_Port GPIOB
-#define button2_EXTI_IRQn EXTI15_10_IRQn
+#define START_BUTTON_Pin GPIO_PIN_12
+#define START_BUTTON_GPIO_Port GPIOB
+#define START_BUTTON_EXTI_IRQn EXTI15_10_IRQn
+#define STOP_BUTTON_Pin GPIO_PIN_14
+#define STOP_BUTTON_GPIO_Port GPIOB
+#define STOP_BUTTON_EXTI_IRQn EXTI15_10_IRQn
 #define I2C3_SCL_LCD_Pin GPIO_PIN_8
 #define I2C3_SCL_LCD_GPIO_Port GPIOA
 #define USART1_TX_DEBUG_Pin GPIO_PIN_9

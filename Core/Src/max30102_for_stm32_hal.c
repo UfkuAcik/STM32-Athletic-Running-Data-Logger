@@ -186,7 +186,7 @@ void max30102_interrupt_handler(max30102_t *obj)
     if ((reg[0] >> MAX30102_INTERRUPT_A_FULL) & 0x01)
     {
         // FIFO almost full
-        max30102_read_fifo(obj); //burada okuyor sample dataları
+        max30102_read_fifo(obj); // Read FIFO sample data
     }
 
     if ((reg[0] >> MAX30102_INTERRUPT_PPG_RDY) & 0x01)

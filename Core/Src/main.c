@@ -22,40 +22,58 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "BME280_STM32.h" //bme280
+#include "BME280_STM32.h" // BME280 environmental sensor
 
 #include "fatfs_sd.h"
-#include <stdio.h>   //Sprintf icin gerekli(SD CARD)
-#include "string.h"  //Sprintf icin gerekli(SD CARD)
+#include <stdbool.h>
+#include <stdio.h>   // snprintf for SD card log formatting
+#include <string.h>
 
-#include "lwgps/lwgps.h" //gps için
+#include "lwgps/lwgps.h" // GPS parser
 
-#include "max30102_for_stm32_hal.h" //oksimetre
+#include "max30102_for_stm32_hal.h" // Pulse oximeter
 
-#include "moving_average.h" //filtre
+#include "moving_average.h" // Moving average filter
 
-#include "fonts.h"  //lcd
-#include "ssd1306.h"//lcd
-#include "test.h"//lcd
-///////////////////////////////
-#include <math.h>  // gercek zamanli alinan yol hesabi icin
-///////////////////////////////
+#include "fonts.h"  // OLED fonts
+#include "ssd1306.h" // OLED display
+#include "test.h"
+#include <math.h>  // Real-time distance calculation
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef enum
+{
+  LOGGER_STATE_IDLE = 0,
+  LOGGER_STATE_START_REQUESTED = 1,
+  LOGGER_STATE_RUNNING = 2,
+  LOGGER_STATE_STOP_REQUESTED = 3
+} LoggerState;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-///////////////  Konum Hesabi(Alinan yol)    ////////////////////
-#define PI 3.14159265358979323846 //pi sayısı
-#define RADIO_TERRESTRE 6372797.56085 //Dünyanın yarıçapı
-#define GRADOS_RADIANES PI / 180 //Radyan çevirme
-/////////////////////////////////
-float spo2=0;
-uint8_t lcd_spo2=0; //LCD de gostermek icin
+#define PI 3.14159265358979323846f
+#define EARTH_RADIUS_M 6372797.56085f
+#define DEG_TO_RAD (PI / 180.0f)
+#define GPS_RX_BUFFER_SIZE 128U
+#define RUN_SAMPLE_PERIOD_MS 400U
+#define RUN_TARGET_DISTANCE_M 100.0f
+#define RUN_MAX_DURATION_MS 240000U
+#define HEART_RATE_MIN_INTERVAL_MS 333U
+#define BUTTON_DEBOUNCE_MS 10U
+
+#define DEFAULT_WEIGHT_KG 90.0f
+#define DEFAULT_AGE_YEARS 24.0f
+
+#define LOG_LINE_BUFFER_SIZE 200U
+#define LOG_FILE_NAME_BUFFER_SIZE 50U
+#define LCD_TEXT_BUFFER_SIZE 50U
+
+float spo2_percent=0;
+uint8_t lcd_spo2_percent=0;
 
 /* USER CODE END PD */
 
@@ -78,74 +96,60 @@ UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-/////////////////////////
-////////////////////////////// Alinan Yol /////////////////////////
 float distance = 0.0;
-float distance_old = 0.0;
-float distance_filtreli=0.0;
-///////////////////////////////////
-float v_filtresiz = 0.0;
-float v_filtreli_birinci_adim = 0.0;
-float v_filtreli_ikinci_adim = 0.0;
+float previous_distance = 0.0;
+float filtered_distance=0.0;
+float raw_velocity = 0.0;
+float filtered_velocity_stage1 = 0.0;
+float filtered_velocity_stage2 = 0.0;
 
-float v_filtreli_ucuncu_adim_yeni = 0.0;
-float v_filtreli_ucuncu_adim_eski = 0.0;
-FilterTypeDef filterStruct;
-FilterTypeDef filterStruct2;
-FilterTypeDef filterStruct3;
-////////////////////////////////////
-float ivmeyeni = 0.0;
-float ivmeeski = 0.0;
+float current_velocity_stage3 = 0.0;
+float previous_velocity_stage3 = 0.0;
+FilterTypeDef velocity_filter1;
+FilterTypeDef velocity_filter2;
+FilterTypeDef velocity_filter3;
+float current_acceleration = 0.0;
+float previous_acceleration = 0.0;
 
-float ivmefiltered = 0.0;
-////////////////////////////////////
-float enlem_baslangic = 0.0;
-float boylam_baslangic = 0.0;
-///////////////////////////  Nabiz   ///////////////////////////////
-int nabiz_bpm=0;
-int nabiz_filtered=0; //surekli önceki adımdaki bpm ile ortalama alır
-int nabiz_filtered2=0;
-int nabiz_filtered3=0;
+float filtered_acceleration = 0.0;
+float start_latitude = 0.0;
+float start_longitude = 0.0;
+int heart_rate_bpm=0;
+int filtered_heart_rate_stage1=0;
+int filtered_heart_rate_stage2=0;
+int filtered_heart_rate=0;
 
-FilterTypeDef filterStructbpm; //Uygulanacak filtreye ait structure
-FilterTypeDef filterStructbpm2;
-FilterTypeDef filterStructbpm3;
+FilterTypeDef heart_rate_filter1;
+FilterTypeDef heart_rate_filter2;
+FilterTypeDef heart_rate_filter3;
 
-uint32_t nabiz_gecen_sure = 0;
-uint32_t nabiz_eski = 0;
-uint32_t nabiz_yeni = 0;
+uint32_t heart_rate_interval_ms = 0;
+uint32_t previous_heart_rate_tick = 0;
+uint32_t current_heart_rate_tick = 0;
 
-////////////////////////////// Button 1//////////////////////
-uint32_t previousMillis12 = 0;
-uint32_t currentMillis12 = 0;
-////////////////////////////// Button 2 ////////////////
-uint32_t previousMillis14 = 0;
-uint32_t currentMillis14 = 0;
-///////////////////////////// Yazma ////////////////////
-int yazma_durum = 0;  // LCD int istiyor
-uint16_t nabiz_ornekleme_periyot = 0; //kullanılmıyor
-uint16_t kosu_ornekleme_periyot = 0;
-/////////////////////////////  Koşu Sayaci //////////////
-uint32_t kosu_suresi_sayac=0;
-////////////////////////////////////////////////////////
-float deniz_seviyesi_sure=0;
-float ort_hiz=0;
-float max_hiz=0;
-uint32_t max_hiza_cikma_suresi=0;
-int max_hiz_nabiz=0;
-int ort_nabiz=0;
+uint32_t previous_start_button_tick = 0;
+uint32_t current_start_button_tick = 0;
+uint32_t previous_stop_button_tick = 0;
+uint32_t current_stop_button_tick = 0;
+volatile int logger_state = LOGGER_STATE_IDLE;
+uint16_t heart_rate_sample_period_ms = 0;
+volatile uint16_t run_sample_period_counter_ms = 0;
+volatile uint32_t run_elapsed_time_ms=0;
+float sea_level_adjusted_time_ms=0;
+float average_speed_mps=0;
+float max_speed_mps=0;
+uint32_t max_speed_time_ms=0;
+int max_speed_heart_rate_bpm=0;
+int average_heart_rate_bpm=0;
 
-float max_hiz_VS=0;
-////////////////////////////Kilo-Yas////////////////////
-//float kilo=100;  //LCD DE DUZGUN GOSTERMEK ICIN FLOAT TANIMLI
-//float yas=0;     //
+float max_speed_body_temperature_c=0;
+//float weight_kg=100;
+//float age_years=0;     //
 
-float kilo=90;  //Gecici olarak,koydum final halinde buttondan al
-float yas=24;     //
-////////////////////////// Button 1-2 /////////////////
-uint8_t button1=0;
-uint8_t button2=0;
-/////////////////////////////
+float weight_kg=DEFAULT_WEIGHT_KG;
+float age_years=DEFAULT_AGE_YEARS;
+volatile uint8_t start_button_pressed=0;
+volatile uint8_t stop_button_pressed=0;
 //// printf() function
 //int __io_putchar(int ch)
 //{
@@ -153,18 +157,23 @@ uint8_t button2=0;
 //  HAL_UART_Transmit(&huart1, &temp, 1, HAL_MAX_DELAY);
 //  return ch;
 //}
-/////////////////////////////////////////////////////////
 
-// Plot fonksiyonu override
+// MAX30102 plot callback override
 void max30102_plot(uint32_t ir_sample, uint32_t red_sample)
-{  //Eğer oksijen saturasyonu %100 den küçükse,değişkene ata
-	if(100 *  ((float)red_sample / (float)(ir_sample))<100)
+{
+	if(ir_sample == 0U)
 	{
-    spo2 = 100 *  ((float)red_sample / (float)(ir_sample));
+		return;
+	}
+
+	float spo2_candidate = 100.0f * ((float)red_sample / (float)ir_sample);
+	if(spo2_candidate < 100.0f)
+	{
+		spo2_percent = spo2_candidate;
 	}
 }
 
-//max30102_t nesnesi bildirilir
+// MAX30102 instance
 
 max30102_t max30102;
 /* USER CODE END PV */
@@ -182,10 +191,30 @@ static void MX_I2C3_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
-////////////////////////////////////////// Alinan Yol Hesaplama Formulu
-float CalcGPSDistance(float latitud1, float longitud1, float latitud2, float longitud2);
-float min(float a ,float b);   // Min fonksiyonu stm kütüphanelerinde yok
-/////////////////////////////////////////
+// GPS distance calculation
+static float CalculateGpsDistance(float latitude1, float longitude1, float latitude2, float longitude2);
+static float MinFloat(float a, float b);
+
+static void App_Init(void);
+static void App_Run(void);
+static void HeartRateFilters_Init(void);
+static void RunFilters_Init(void);
+static void PulseOximeter_Init(void);
+static void PulseOximeter_Process(void);
+static void DS18B20_UpdateTemperature(void);
+static void Logger_Process(void);
+static void Logger_Start(void);
+static void Logger_Record(void);
+static bool Logger_ShouldStop(void);
+static void Logger_Stop(void);
+static void Logger_ResetSession(void);
+static void Logger_ResetMeasurements(void);
+static void Logger_WriteHeader(void);
+static void Logger_WriteSample(void);
+static void Logger_UpdateMotion(void);
+static void Logger_UpdateStatistics(void);
+static void Display_Update(void);
+static bool GPS_HasFix(void);
 
 /* USER CODE END PFP */
 
@@ -195,49 +224,56 @@ float min(float a ,float b);   // Min fonksiyonu stm kütüphanelerinde yok
 // GPS //////////////////////////////////////////////////////////
 lwgps_t gps;
 
-uint8_t rx_buffer[128];
-uint8_t rx_index = 0;
-uint8_t rx_data = 0;
+uint8_t gps_rx_buffer[GPS_RX_BUFFER_SIZE];
+uint8_t gps_rx_index = 0;
+uint8_t gps_rx_byte = 0;
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	if(huart == &huart2) //Eger interrupt UART2 den geldiyse
+	if(huart == &huart2)
 	{
-		if(rx_data != '\n' && rx_index < sizeof(rx_buffer))
+		if(gps_rx_byte == '\n')
+		{
+			if(gps_rx_index < sizeof(gps_rx_buffer))
 			{
-			rx_buffer[rx_index++] = rx_data; // Buffera doldurma
+				gps_rx_buffer[gps_rx_index++] = gps_rx_byte;
 			}
+
+			lwgps_process(&gps, gps_rx_buffer, gps_rx_index);
+			gps_rx_index = 0;
+			gps_rx_byte = 0;
+		}
+		else if(gps_rx_index < sizeof(gps_rx_buffer))
+		{
+			gps_rx_buffer[gps_rx_index++] = gps_rx_byte;
+		}
 		else
-			{
-			lwgps_process(&gps, rx_buffer, rx_index+1); //Parse etme
-			rx_index = 0;
-			rx_data = 0;
-			}
-		HAL_UART_Receive_IT(&huart2, &rx_data, 1);//Yeniden
-	}                                           //receive enable etme
+		{
+			gps_rx_index = 0;
+		}
+		HAL_UART_Receive_IT(&huart2, &gps_rx_byte, 1);
+	}
 }
 
-// SD CARD ////////////////////////////////
-int indx=0;
-char yazi[200];
-char dosya_adi[50];
-///////////////////// LCD //////////////////////////////////////
-char lcd_yazi[50];
-////////////////////   BME280     //////////////////////////////
-float Temperature, Pressure, Humidity;
-//////////////////////   DS18B20          ////////////////////
-float Temperature_DS;//Nihai ölçüm
+// SD card
+int log_sample_index=0;
+char log_line_buffer[LOG_LINE_BUFFER_SIZE];
+char log_file_name[LOG_FILE_NAME_BUFFER_SIZE];
+//// OLED text buffer
+char lcd_text_buffer[LCD_TEXT_BUFFER_SIZE];
+//// BME280 measurements
+float ambient_temperature_c, ambient_pressure_pa, ambient_humidity_rh;
+//// DS18B20 measurements
+float body_temperature_c;
 
-uint8_t lcd_Temperature_DS=0; //LCD'de gösterebilmek için
-uint8_t Temp_byte1, Temp_byte2;//geçici değerler
-uint16_t TEMP;//geçici değerler
-/////////////////////// DS18B20 MicroDelay     ///////////////////////////////
-void microDelay (uint16_t delay)  //Mikrosaniye Delay Fonksiyonu
+uint8_t lcd_body_temperature_c=0;
+uint8_t ds18b20_temp_lsb, ds18b20_temp_msb;
+uint16_t ds18b20_raw_temperature;
+void microDelay (uint16_t delay)
 {
-  __HAL_TIM_SET_COUNTER(&htim5, 0); //Counter sıfırlama
-  while (__HAL_TIM_GET_COUNTER(&htim5) < delay);  //DS18B20 icin timer source(tim5)
+  __HAL_TIM_SET_COUNTER(&htim5, 0);
+  while (__HAL_TIM_GET_COUNTER(&htim5) < delay);
 }
-// ONE WIRE PIN OUTPUT-INPUT AYARLAMA   DS18B20 ///////////////////////////////////////////
 void Set_Pin_Output (GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin)
 {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -256,54 +292,53 @@ void Set_Pin_Input (GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin)
 	HAL_GPIO_Init(GPIOx, &GPIO_InitStruct);
 }
 
-///////////////////////// DS18B20 Fonksiyonlar  ////////////////////////////////////////
 #define DS18B20_PORT GPIOA
 #define DS18B20_PIN GPIO_PIN_1
 
 uint8_t DS18B20_Start (void)
 {
-	uint8_t Response = 0;
-	Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);   // Pin output ayarlanır
-	HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);  // Pin low a çekilir
-	microDelay(480);   // Data sheet'e uygun olarak delay
+	uint8_t response = 0;
+	Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);
+	HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);
+	microDelay(480);
 
-	Set_Pin_Input(DS18B20_PORT, DS18B20_PIN);    // Pin input ayarlanır
-	microDelay(80);    // Data sheet'e uygun olarak delay
+	Set_Pin_Input(DS18B20_PORT, DS18B20_PIN);
+	microDelay(80);
 
-	if (!(HAL_GPIO_ReadPin (DS18B20_PORT, DS18B20_PIN))) Response = 1;    // pin low ise sorgusu
-	else Response = -1;
+	if (!(HAL_GPIO_ReadPin (DS18B20_PORT, DS18B20_PIN))) response = 1;
+	else response = 0;
 
-	microDelay(480); // // Data sheet'e uygun olarak delay
+	microDelay(480);
 
-	return Response;
+	return response;
 }
 
 void DS18B20_Write (uint8_t data)
 {
-	Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);  // Pin output ayarlanır
+	Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);
 
 	for (int i=0; i<8; i++)
 	{
 
-		if ((data & (1<<i))!=0)  // Eğer bit H ise
+		if ((data & (1<<i))!=0)
 		{
-			// 1 yazilir
+			// Write bit 1
 
-			Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);  // Pin Output ayarlanır
-			HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);  // Pin low a çekilir
-			microDelay(1);  // 1 mikrosaniye beklenir
+			Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);
+			HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);
+			microDelay(1);
 
-			Set_Pin_Input(DS18B20_PORT, DS18B20_PIN);  // Pin input olarak ayarlanır
-			microDelay(50);  // 50-60 mikrosaniye beklenir
+			Set_Pin_Input(DS18B20_PORT, DS18B20_PIN);
+			microDelay(50);
 		}
 
-		else  // Bit L ise
+		else
 		{
-			// 0 yazılır
+			// Write bit 0
 
-			Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);	// Pin Output ayarlanır
-			HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);  // Pin low'a çekilir
-			microDelay(50);  // 50-60 mikrosaniye beklenir.
+			Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);
+			HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);
+			microDelay(50);
 
 			Set_Pin_Input(DS18B20_PORT, DS18B20_PIN);
 		}
@@ -318,36 +353,403 @@ uint8_t DS18B20_Read (void)
 
 	for (int i=0;i<8;i++)
 	{
-		Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);   // Output olarak ayarlanır
+		Set_Pin_Output(DS18B20_PORT, DS18B20_PIN);
 
-		HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);  // Pini lowa çekilir
+		HAL_GPIO_WritePin (DS18B20_PORT, DS18B20_PIN, 0);
 		microDelay(1);  // wait for > 1us
 
-		Set_Pin_Input(DS18B20_PORT, DS18B20_PIN);  // Pin input olarak ayarlanir
-		if (HAL_GPIO_ReadPin (DS18B20_PORT, DS18B20_PIN))  // Eğer pin H ise
+		Set_Pin_Input(DS18B20_PORT, DS18B20_PIN);
+		if (HAL_GPIO_ReadPin (DS18B20_PORT, DS18B20_PIN))
 		{
 			value |= 1<<i;  // read = 1
 		}
-		microDelay(50);  // 50-60 mikrosaniye beklenir.
+		microDelay(50);
 	}
 	return value;
 }
-///  FATFS   /////////////////////////////////////////////
+// FATFS
 
 FATFS fs;  // file system
 FIL fil; // File
 FILINFO fno;
 FRESULT fresult;  // result
 UINT br, bw;  // File read/write count
+static bool log_file_open = false;
 
-/**** Kapasite Icin *****/
+/**** Capacity info *****/
 FATFS *pfs;
 DWORD fre_clust;
 uint32_t total, free_space;
 
 
+static void App_Init(void)
+{
+  SSD1306_Init();
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  HAL_TIM_Base_Start(&htim5);
+
+  BME280_Config(OSRS_2, OSRS_16, OSRS_1, MODE_NORMAL, T_SB_0p5, IIR_16);
+  HAL_Delay(500);
+
+  HAL_TIM_Base_Start_IT(&htim2);
+
+  lwgps_init(&gps);
+  HAL_UART_Receive_IT(&huart2, &gps_rx_byte, 1);
+
+  PulseOximeter_Init();
+
+  SSD1306_Clear();
+  HAL_Delay(1500);
+
+  start_button_pressed = 0;
+  stop_button_pressed = 0;
+  logger_state = LOGGER_STATE_IDLE;
+  run_sample_period_counter_ms = 0;
+  run_elapsed_time_ms = 0;
+
+  HeartRateFilters_Init();
+  BME280_Measure();
+}
+
+static void App_Run(void)
+{
+  PulseOximeter_Process();
+  DS18B20_UpdateTemperature();
+  Logger_Process();
+  Display_Update();
+}
+
+static void HeartRateFilters_Init(void)
+{
+  Moving_Average_Init(&heart_rate_filter1);
+  Moving_Average_Init(&heart_rate_filter2);
+  Moving_Average_Init(&heart_rate_filter3);
+}
+
+static void RunFilters_Init(void)
+{
+  Moving_Average_Init(&velocity_filter1);
+  Moving_Average_Init(&velocity_filter2);
+  Moving_Average_Init(&velocity_filter3);
+}
+
+static void PulseOximeter_Init(void)
+{
+  max30102_init(&max30102, &hi2c1);
+  max30102_reset(&max30102);
+  max30102_clear_fifo(&max30102);
+
+  max30102_set_fifo_config(&max30102, max30102_smp_ave_8, 1, 7);
+  max30102_set_led_pulse_width(&max30102, max30102_pw_16_bit);
+  max30102_set_adc_resolution(&max30102, max30102_adc_2048);
+  max30102_set_sampling_rate(&max30102, max30102_sr_800);
+  max30102_set_led_current_1(&max30102, 6.2);
+  max30102_set_led_current_2(&max30102, 6.2);
+
+  max30102_set_mode(&max30102, max30102_spo2);
+  max30102_set_a_full(&max30102, 1);
+  max30102_set_die_temp_en(&max30102, 1);
+  max30102_set_die_temp_rdy(&max30102, 1);
+
+  uint8_t interrupt_status[2] = {0};
+  max30102_read(&max30102, 0x00, interrupt_status, 1);
+}
+
+static void PulseOximeter_Process(void)
+{
+  if(max30102_has_interrupt(&max30102))
+  {
+    max30102_interrupt_handler(&max30102);
+  }
+}
+
+static void DS18B20_UpdateTemperature(void)
+{
+  DS18B20_Start();
+  HAL_Delay(1);
+  DS18B20_Write(0xCC);
+  DS18B20_Write(0x44);
+
+  DS18B20_Start();
+  HAL_Delay(1);
+  DS18B20_Write(0xCC);
+  DS18B20_Write(0xBE);
+
+  ds18b20_temp_lsb = DS18B20_Read();
+  ds18b20_temp_msb = DS18B20_Read();
+  ds18b20_raw_temperature = (ds18b20_temp_msb << 8) | ds18b20_temp_lsb;
+  body_temperature_c = (float)ds18b20_raw_temperature / 16.0f;
+}
+
+static void Logger_Process(void)
+{
+  if(logger_state == LOGGER_STATE_START_REQUESTED)
+  {
+    Logger_Start();
+  }
+
+  if(logger_state == LOGGER_STATE_RUNNING)
+  {
+    Logger_Record();
+  }
+
+  if(Logger_ShouldStop())
+  {
+    Logger_Stop();
+  }
+}
+
+static void Logger_Start(void)
+{
+  BME280_Measure();
+  log_sample_index = 0;
+  Logger_ResetMeasurements();
+
+  fresult = f_mount(&fs, "", 0);
+  if(fresult != FR_OK)
+  {
+    logger_state = LOGGER_STATE_IDLE;
+    return;
+  }
+
+  snprintf(log_file_name, sizeof(log_file_name), "%d-%d-%d--%d-%d-%d.txt",
+           gps.hours, gps.minutes, gps.seconds, gps.date, gps.month, gps.year);
+
+  fresult = f_open(&fil, log_file_name, FA_OPEN_ALWAYS | FA_WRITE | FA_READ);
+  if(fresult != FR_OK)
+  {
+    f_mount(NULL, "/", 1);
+    logger_state = LOGGER_STATE_IDLE;
+    return;
+  }
+
+  log_file_open = true;
+  fresult = f_lseek(&fil, f_size(&fil));
+  if(fresult != FR_OK)
+  {
+    f_close(&fil);
+    log_file_open = false;
+    f_mount(NULL, "/", 1);
+    logger_state = LOGGER_STATE_IDLE;
+    return;
+  }
+
+  Logger_WriteHeader();
+
+  run_elapsed_time_ms = 0;
+  run_sample_period_counter_ms = 0;
+  RunFilters_Init();
+  logger_state = LOGGER_STATE_RUNNING;
+}
+
+static void Logger_Record(void)
+{
+  if(log_sample_index == 0 && GPS_HasFix())
+  {
+    start_latitude = gps.latitude;
+    start_longitude = gps.longitude;
+    log_sample_index = 1;
+  }
+
+  distance = CalculateGpsDistance(gps.latitude, gps.longitude,
+                             start_latitude, start_longitude);
+
+  if(log_sample_index == 1)
+  {
+    Logger_WriteSample();
+    log_sample_index++;
+  }
+
+  if(run_sample_period_counter_ms >= RUN_SAMPLE_PERIOD_MS &&
+     distance > previous_distance &&
+     log_sample_index > 1)
+  {
+    Logger_UpdateMotion();
+    Logger_WriteSample();
+    log_sample_index++;
+
+    previous_distance = distance;
+    previous_velocity_stage3 = current_velocity_stage3;
+    previous_acceleration = current_acceleration;
+
+    Logger_UpdateStatistics();
+    run_sample_period_counter_ms = 0;
+  }
+}
+
+static bool Logger_ShouldStop(void)
+{
+  return (logger_state == LOGGER_STATE_STOP_REQUESTED) ||
+         (logger_state == LOGGER_STATE_RUNNING &&
+          (filtered_distance >= RUN_TARGET_DISTANCE_M ||
+           run_elapsed_time_ms > RUN_MAX_DURATION_MS));
+}
+
+static void Logger_Stop(void)
+{
+  if(log_file_open)
+  {
+    sea_level_adjusted_time_ms =
+        run_elapsed_time_ms * (1.03f - (0.03f * expf(-0.000125f * gps.altitude)));
+
+    uint32_t speed_sample_count = (log_sample_index > 1) ? (uint32_t)(log_sample_index - 1) : 1U;
+    uint32_t pulse_sample_count = (log_sample_index > 2) ? (uint32_t)(log_sample_index - 2) : 1U;
+
+    average_speed_mps = average_speed_mps / speed_sample_count;
+    average_heart_rate_bpm = average_heart_rate_bpm / pulse_sample_count;
+
+    if(average_heart_rate_bpm > (220.0f - age_years) * 0.8f)
+    {
+      snprintf(log_line_buffer, sizeof(log_line_buffer), "\nAverage Heart Rate High: %d \n", average_heart_rate_bpm);
+      f_puts(log_line_buffer, &fil);
+    }
+    else
+    {
+      snprintf(log_line_buffer, sizeof(log_line_buffer), "\nAverage Heart Rate Normal: %d \n", average_heart_rate_bpm);
+      f_puts(log_line_buffer, &fil);
+    }
+
+    snprintf(log_line_buffer, sizeof(log_line_buffer),
+             "\nTotal_Time(ms),Sea_Level_Time(ms),Total_Distance(m),Average_Speed(m/s),"
+             "Max_Speed(m/s),Max_Speed_Time(ms),Max_Speed_HR,Max_Speed_Body_Temp,SpO2\n");
+    f_puts(log_line_buffer, &fil);
+
+    snprintf(log_line_buffer, sizeof(log_line_buffer), "%d,%.0f,%.3f,%.3f,%.3f,%d,%d,%.2f,%.0f\n",
+             (int)run_elapsed_time_ms, sea_level_adjusted_time_ms, filtered_distance,
+             average_speed_mps, max_speed_mps, (int)max_speed_time_ms, max_speed_heart_rate_bpm,
+             max_speed_body_temperature_c, spo2_percent);
+    f_puts(log_line_buffer, &fil);
+
+    f_close(&fil);
+    log_file_open = false;
+  }
+
+  f_mount(NULL, "/", 1);
+  Logger_ResetSession();
+  SSD1306_Clear();
+}
+
+static void Logger_ResetSession(void)
+{
+  log_sample_index = 0;
+  logger_state = LOGGER_STATE_IDLE;
+  run_sample_period_counter_ms = 0;
+  run_elapsed_time_ms = 0;
+  Logger_ResetMeasurements();
+}
+
+static void Logger_ResetMeasurements(void)
+{
+  distance = 0.0f;
+  previous_distance = 0.0f;
+  filtered_distance = 0.0f;
+
+  raw_velocity = 0.0f;
+  filtered_velocity_stage1 = 0.0f;
+  filtered_velocity_stage2 = 0.0f;
+  current_velocity_stage3 = 0.0f;
+  previous_velocity_stage3 = 0.0f;
+
+  current_acceleration = 0.0f;
+  previous_acceleration = 0.0f;
+  filtered_acceleration = 0.0f;
+
+  start_latitude = 0.0f;
+  start_longitude = 0.0f;
+
+  sea_level_adjusted_time_ms = 0.0f;
+  average_speed_mps = 0.0f;
+  max_speed_mps = 0.0f;
+  max_speed_time_ms = 0;
+  max_speed_heart_rate_bpm = 0;
+  max_speed_body_temperature_c = 0.0f;
+  average_heart_rate_bpm = 0;
+}
+
+static void Logger_WriteHeader(void)
+{
+  snprintf(log_line_buffer, sizeof(log_line_buffer), "Ambient_Temp(C),Humidity(RH),Atmospheric_Pressure(kPa),Weight,Age\n");
+  f_puts(log_line_buffer, &fil);
+
+  snprintf(log_line_buffer, sizeof(log_line_buffer), "%.0f,%.0f,%.1f,%.0f,%.0f\n",
+           ambient_temperature_c, ambient_humidity_rh, ambient_pressure_pa / 1000.0f, weight_kg, age_years);
+  f_puts(log_line_buffer, &fil);
+
+  snprintf(log_line_buffer, sizeof(log_line_buffer),
+           "\nSample,Time(ms),Latitude,Longitude,Distance(m),Velocity(m/s),Acceleration(m/s^2),"
+           "Body_Temp(C),Heart_Rate(bpm)\n");
+  f_puts(log_line_buffer, &fil);
+}
+
+static void Logger_WriteSample(void)
+{
+  snprintf(log_line_buffer, sizeof(log_line_buffer), "%d,%d,%.6f,%.6f,%.3f,%.3f,%.3f,%.2f,%d\n",
+           log_sample_index, (int)run_elapsed_time_ms, gps.latitude, gps.longitude,
+           filtered_distance, filtered_velocity_stage2, filtered_acceleration,
+           body_temperature_c, filtered_heart_rate);
+  f_puts(log_line_buffer, &fil);
+}
+
+static void Logger_UpdateMotion(void)
+{
+  filtered_distance = (distance + filtered_distance) / 2.0f;
+
+  raw_velocity = (1000.0f * (distance - previous_distance)) / run_sample_period_counter_ms;
+  filtered_velocity_stage1 = Moving_Average_Compute(raw_velocity, &velocity_filter1);
+  filtered_velocity_stage2 = Moving_Average_Compute(filtered_velocity_stage1, &velocity_filter2);
+  current_velocity_stage3 = Moving_Average_Compute(filtered_velocity_stage2, &velocity_filter3);
+
+  current_acceleration = ((current_velocity_stage3 - previous_velocity_stage3) * 1000.0f) /
+             run_sample_period_counter_ms;
+  filtered_acceleration = (current_acceleration + previous_acceleration) / 2.0f;
+}
+
+static void Logger_UpdateStatistics(void)
+{
+  average_speed_mps = average_speed_mps + filtered_velocity_stage2;
+  average_heart_rate_bpm = average_heart_rate_bpm + filtered_heart_rate;
+
+  if(max_speed_mps < filtered_velocity_stage2)
+  {
+    max_speed_mps = filtered_velocity_stage2;
+    max_speed_time_ms = run_elapsed_time_ms;
+    max_speed_heart_rate_bpm = filtered_heart_rate;
+    max_speed_body_temperature_c = body_temperature_c;
+  }
+}
+
+static void Display_Update(void)
+{
+  lcd_spo2_percent = (uint8_t)spo2_percent;
+  lcd_body_temperature_c = (uint8_t)body_temperature_c;
+
+  SSD1306_GotoXY(0, 0);
+  snprintf(lcd_text_buffer, sizeof(lcd_text_buffer), "HR:%d|O2:%d|BT:%d ",
+           filtered_heart_rate, lcd_spo2_percent, lcd_body_temperature_c);
+  SSD1306_Puts(lcd_text_buffer, &Font_7x10, 1);
+
+  SSD1306_GotoXY(0, 11);
+  SSD1306_Puts("Dist,Speed,Accel", &Font_7x10, 1);
+
+  SSD1306_GotoXY(0, 22);
+  snprintf(lcd_text_buffer, sizeof(lcd_text_buffer), "%.2f,%.2f,%.2f",
+           filtered_distance, filtered_velocity_stage2, filtered_acceleration);
+  SSD1306_Puts(lcd_text_buffer, &Font_7x10, 1);
+
+  SSD1306_GotoXY(0, 44);
+  snprintf(lcd_text_buffer, sizeof(lcd_text_buffer), "State:%d;Time:%d",
+           logger_state, (int)run_elapsed_time_ms);
+  SSD1306_Puts(lcd_text_buffer, &Font_7x10, 1);
+
+  SSD1306_UpdateScreen();
+}
+
+static bool GPS_HasFix(void)
+{
+  return gps.latitude != 0.0f && gps.longitude != 0.0f;
+}
+
+
 
 
 
@@ -391,145 +793,7 @@ int main(void)
   MX_I2C3_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-/////////////////////  OLED EKRAN ///////////////////////////////////
-SSD1306_Init();  // initialise
-////// DS18B20 /////////////////////////////////
-  HAL_TIM_Base_Start(&htim5);
-  ///////////////////////////// BME280 ////////////////////////////////
-  BME280_Config(OSRS_2, OSRS_16, OSRS_1, MODE_NORMAL, T_SB_0p5, IIR_16);
-  ///////////////////////////////////////////////////////////////////
-  HAL_Delay (500);
-  ////////////////////////////////////////////////////////////////////////////////////////////////////
-  HAL_TIM_Base_Start_IT(&htim2);
-  ///  GNSS  ///////////////////////////////////////////////////////////////////////////////////////////////
-  lwgps_init(&gps);
-  HAL_UART_Receive_IT(&huart2, &rx_data, 1);
-  ///////////////////////////////////////////////////////
-  // Init
-     max30102_init(&max30102, &hi2c1);
-
-     max30102_reset(&max30102);  //Sensör sifirlanir
-     max30102_clear_fifo(&max30102);
-
-     max30102_set_fifo_config(&max30102, max30102_smp_ave_8, 1, 7); //fifo ayarları yapılır
-
-     // Sensor ayarları
-     max30102_set_led_pulse_width(&max30102, max30102_pw_16_bit);
-     max30102_set_adc_resolution(&max30102, max30102_adc_2048);
-     max30102_set_sampling_rate(&max30102, max30102_sr_800);
-     max30102_set_led_current_1(&max30102, 6.2);
-     max30102_set_led_current_2(&max30102, 6.2);
-
-
-     max30102_set_mode(&max30102, max30102_spo2);// SpO2 moduna giriş
-     max30102_set_a_full(&max30102, 1);//FIFO_A_FULL kesintisini etkinleştirilir
-
-     max30102_set_die_temp_en(&max30102, 1);//Çip sıcaklığı ölçümünü etkinleştirilir
-     max30102_set_die_temp_rdy(&max30102, 1);//DIE_TEMP_RDY kesmesini etkinleştirilir
-
-     uint8_t en_reg[2] = {0};
-     max30102_read(&max30102, 0x00, en_reg, 1);
-//////////////////////////////////////////////////////////
-////   LCD Acilis
-//
-//SSD1306_GotoXY (15,15);
-//SSD1306_Puts ("Merhaba;", &Font_7x10, 1);
-//SD1306_GotoXY (25, 30);
-//SSD1306_Puts ("Data Logger'a", &Font_7x10, 1);
-//SSD1306_GotoXY (15, 45);
-//SSD1306_Puts ("Hosgeldiniz :)", &Font_7x10, 1);
-//SSD1306_UpdateScreen(); //display
-//
-//HAL_Delay (2000);
-//
-//SSD1306_InvertDisplay(1);   // invert the display
-//
-//HAL_Delay(1000);
-//
-//SSD1306_InvertDisplay(0);  // normalize the display
-//
-//HAL_Delay(1000);
-//
-//SSD1306_Clear();
-/////////////////////////////////////////////////// kilo,yas alma
-//     while(button2!=1)
-//     {
-//
-//    	 if(button1==1)
-//    	 {
-//    		kilo=kilo-1;
-//    		button1=0;
-//    	 }
-//         ////
-//    	 if(kilo<0)
-//    	 {
-//    		 kilo=100;   //Koşucularda 90 kg üstü agir kabul edilir.
-//    	 }
-//    	 SSD1306_GotoXY (15,15);
-//    	 SSD1306_Puts ("Kilo Giriniz: kg", &Font_7x10, 1);
-//    	 SSD1306_GotoXY (15, 30);
-//    	 sprintf (lcd_yazi,"%.1f",kilo);
-//    	 SSD1306_Puts (lcd_yazi, &Font_7x10, 1);
-//    	 SSD1306_UpdateScreen(); //display
-//    	 if(button2==1)   //Onay buttonu gelirse cikacak(break)
-//    	 {
-//    		 button2=0;
-//    		 break;
-//    	 }
-//
-//     }
-//  // Program baslamadan button(exti) degiskenlerini sıfırlama
-//     SSD1306_Clear();
-//     ////////////////////////////////////////////////
-//     HAL_Delay(1500);   //button2(onay buttonu) direk onaylayıp geçmesin
-//     ///////////////////////////////////////////////
-//     button1=0;
-//     button2=0;
-//     yazma_durum=0;
-//     kosu_suresi_sayac=0;
-//     //////////////////////////////////////////
-//     while(button2!=1)
-//          {
-//
-//         	 if(button1==1)
-//         	 {
-//         		yas++;
-//         		button1=0;
-//         	 }
-//              ////
-//         	 if(yas>100)
-//         	 {
-//         		 yas=0;
-//         	 }
-//         	 SSD1306_GotoXY (15,15);
-//         	 SSD1306_Puts ("Yas Giriniz:", &Font_7x10, 1);
-//         	 SSD1306_GotoXY (15, 30);
-//         	 sprintf (lcd_yazi,"%.1f",yas);
-//         	 SSD1306_Puts (lcd_yazi, &Font_7x10, 1);
-//         	 SSD1306_UpdateScreen(); //display
-//         	 if(button2==1)  // Onay buttonu gelirse cikacak(break)
-//         	 {
-//         		 button2=0;
-//         		 break;
-//         	 }
-//
-//          }
-// Program baslamadan button(exti) degiskenlerini
-
-       	 SSD1306_Clear();               //bir kere sıfırla
-     	 HAL_Delay(1500);          //button2:   yazma_durum 3 almasın direkt diye  BU SATIRI MUTLAKA AC !!!!! Yoksa buga girer
-     	 button1=0;
-     	 button2=0;
-     	 yazma_durum=0;
-     	 kosu_ornekleme_periyot=0;
-     	 kosu_suresi_sayac=0;
-         //////////////////////////////////////////////
-         Moving_Average_Init(&filterStructbpm); // bpm filtre degerleri temizleme
-         Moving_Average_Init(&filterStructbpm2);
-         Moving_Average_Init(&filterStructbpm3);
-         ///////////// BME 280 ////////////////////////  Acilisda bir kerelik hesaplayacak(nem,ortam sicakligi,atmosfer bas)
-         BME280_Measure();
-
+  App_Init();
 
   /* USER CODE END 2 */
 
@@ -540,192 +804,7 @@ SSD1306_Init();  // initialise
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  /////////////////// oksimetre ////////////////
-	  if (max30102_has_interrupt(&max30102))
-	  	  // FIFO'yu okumak için kesme işleyicisini çalıştır
-	  	  max30102_interrupt_handler(&max30102);
-	  /////////////////////   DS18B20    //////////////////
-	  DS18B20_Start ();
-	  HAL_Delay (1);
-	  DS18B20_Write (0xCC);  // skip ROM
-	  DS18B20_Write (0x44);  // convert t
-
-	  DS18B20_Start ();
-	  HAL_Delay(1);
-	  DS18B20_Write (0xCC);  // skip ROM
-	  DS18B20_Write (0xBE);  // Read Scratch-pad
-
-	  Temp_byte1 = DS18B20_Read();
-	  Temp_byte2 = DS18B20_Read();
-	  TEMP = (Temp_byte2<<8)|Temp_byte1;
-	  Temperature_DS = (float)TEMP/16;   //Sporcunun vucüt sıcaklığını ölcer
-	  /////////////////////////////////////////
-
-	  if(yazma_durum==1) //Yazma baslangic adimlari
-	  	  {
-		  BME280_Measure(); // Ilk iki satir icin init haric,bir kez daha ölc(Ölctügü garanti olsun)
-
-		  f_mount(&fs, "", 0);    //Sd karti Mount et
-		  sprintf (dosya_adi,"%d-%d-%d--%d-%d-%d.txt",gps.hours,gps.minutes,gps.seconds,gps.date,gps.month,gps.year); //Degiskenleri cek
-		  f_open(&fil, dosya_adi, FA_OPEN_ALWAYS | FA_WRITE | FA_READ); //Antreman tarihine,zamanina uygun isimle dosya olustur
-		  f_lseek(&fil, f_size(&fil));  //Son satira git
-		  sprintf (yazi,"Ortam_Sic(C),Nem(RH),Atmosfer_Bas(kPa),Kilo,Yas\n");
-		  f_puts(yazi , &fil);  //yazdir
-		  sprintf (yazi,"%.0f,%.0f,%.1f,%.0f,%.0f\n",Temperature,Humidity,Pressure/1000,kilo,yas);
-		  f_puts(yazi , &fil);  //yazdir
-		  sprintf (yazi,"\nSatir,Zam(ms),Enlem,Boylam,Al_Yol(m),V(m/s),Ivme(m/s^2),VS(C),Nabiz(bpm)\n");
-		  f_puts(yazi , &fil);  //yazdir
-		  kosu_suresi_sayac=0;       //0 dan baslasin
-		  kosu_ornekleme_periyot=0;  //0 dan baslasin
-		  Moving_Average_Init(&filterStruct);   //Filtre Init (Filtrelenmis degerleri sıfırlama)
-		  Moving_Average_Init(&filterStruct2);  //Kayıt ikinci kere çalıştırılsa diye
-		  Moving_Average_Init(&filterStruct3);
-		  yazma_durum=2;  //2. Yazma durumuna gec
-	  	  }
-//////////////////////////////////////////////////////////////////////////////////////////////
-	  if(yazma_durum==2)
-	  	  {
-		  //indx=0 hala burada
-		  if(indx==0 && gps.latitude != 0 && gps.longitude !=0)  //gps_baslangic_ornek_alma tek seferlik baslangic konumundan ornek almasini sagliyor.
-		  	  	  	  {
-		  		  	  enlem_baslangic=gps.latitude;
-		  		  	  boylam_baslangic=gps.longitude;
-		  		  	  indx=1;  //gps
-		  		  	  }
-		  distance = CalcGPSDistance(gps.latitude, gps.longitude,enlem_baslangic,boylam_baslangic);  //Yazma durum 2 içinde surekli alınan yol hesabı yapacak
-		  // indx=1
-		  if(indx==1) // ilk satiri yazsin diye(başlangıç konumundaki değerler)
-		  {
-			  sprintf (yazi,"%d,%d,%.6f,%.6f,%.3f,%.3f,%.3f,%.2f,%d\n",indx,kosu_suresi_sayac,gps.latitude,gps.longitude,distance_filtreli,v_filtreli_ikinci_adim,ivmefiltered,Temperature_DS,nabiz_filtered3);
-			  f_puts(yazi , &fil);  //yazdir
-			  indx++;
-		  }
-          //indx >1
-		  if(kosu_ornekleme_periyot>=400 && distance>distance_old && indx>1)  //Sadece alınan yolda ilerleme varsa kaydedecek
-		  		  {
-
-			  	  distance_filtreli=(distance+distance_filtreli)/2;
-
-			  	  v_filtresiz=((1000*(distance-distance_old))/kosu_ornekleme_periyot); //1000 le carpmayı unutma
-			  	  v_filtreli_birinci_adim=Moving_Average_Compute(v_filtresiz, &filterStruct); //Bir kere filtreleme
-			  	  v_filtreli_ikinci_adim=Moving_Average_Compute(v_filtreli_birinci_adim, &filterStruct2);//İki kere filtreleme
-
-			  	  v_filtreli_ucuncu_adim_yeni=Moving_Average_Compute(v_filtreli_ikinci_adim, &filterStruct3);//Üç kere filtreleme(ivme hesabı için,hız kaydı için değil)
-
-			  	  ivmeyeni=((v_filtreli_ucuncu_adim_yeni - v_filtreli_ucuncu_adim_eski) * 1000)/kosu_ornekleme_periyot;//ivme hesaplama
-			  	  ivmefiltered=(ivmeyeni+ivmeeski)/2;//İvme filtreleme
-
-			  	  sprintf (yazi,"%d,%d,%.6f,%.6f,%.3f,%.3f,%.3f,%.2f,%d\n",indx,kosu_suresi_sayac,gps.latitude,gps.longitude,distance_filtreli,v_filtreli_ikinci_adim,ivmefiltered,Temperature_DS,nabiz_filtered3);
-			  	  f_puts(yazi , &fil);  //yazdir
-			  	  indx++;
-			  	  distance_old=distance;
-			  	  v_filtreli_ucuncu_adim_eski = v_filtreli_ucuncu_adim_yeni;
-			  	  ivmeeski=ivmeyeni;
-			  	//////////////////////////  İstatistik Kayitlar       /////////////////////////////////
-			  				  	  ort_hiz=ort_hiz+v_filtreli_ikinci_adim;
-			  				  	  ort_nabiz=ort_nabiz+nabiz_filtered3;
-
-			  				  	  if(max_hiz<v_filtreli_ikinci_adim)
-			  				  	  {
-			  				  		max_hiz=v_filtreli_ikinci_adim;
-			  				  		max_hiza_cikma_suresi=kosu_suresi_sayac;
-			  				  		max_hiz_nabiz=nabiz_filtered3;
-			  				  	    max_hiz_VS=Temperature_DS;
-			  				  	  }
-
-			  	 //////////////////////////////////////////////////////////
-			  	  kosu_ornekleme_periyot=0;
-		  		  }
-	  	  }  // yazma durum 2 nin
-
-///////////////////////////////////  Yazma Durum 3   /////////////////////////////////////////////////////////////////
-	  	  if(yazma_durum == 3 || distance_filtreli >= 100 || kosu_suresi_sayac > 240000 )  // Eger durma komutu gelirse(200 metre kosulursa) ya da  4 dakika sonunda otomatik(Ram'i doldurup donmasin diye)
-	  	  {                                                       //bitis icin veya koy alinan yol >= 100 metre ise yap
-
-	  		  deniz_seviyesi_sure=(kosu_suresi_sayac*(1.03-(0.03*exp(-0.000125*gps.altitude))));
-	  		  ort_hiz=ort_hiz/(indx-1);			     // indx 1 ken hız 0.
-              ort_nabiz=ort_nabiz/(indx-2);      //indx 1 ken nabiz 0 değil
-
-            if(ort_nabiz>(220-yas)*0.8)  //Nabiz degerlendirme:Yuksek
-            {
-            	sprintf (yazi,"\nOrtalama Nabiz Yuksek: %d \n",ort_nabiz);
-            	f_puts(yazi , &fil);  //yazdir
-            }
-
-            if(ort_nabiz<=(220-yas)*0.8) // Nabiz degerlendirme:Dusuk
-            {
-            	sprintf (yazi,"\nOrtalama Nabiz Normal: %d \n",ort_nabiz);
-            	f_puts(yazi , &fil);  //yazdir
-            }
-
-            sprintf (yazi,"\nTop_Sur(ms),Den_Sev_Sur(ms),Top_Yol(m),Ort_Hiz(m/s),Max_Hiz(m/s),Max_Hiz_Cik_Sur(ms),Max_Hiz_Nab,Max_Hiz_VS,SpO2\n");
-            f_puts(yazi , &fil);  //yazdir
-            sprintf (yazi,"%d,%.0f,%.3f,%.3f,%.3f,%d,%d,%.2f,%.0f\n",kosu_suresi_sayac,deniz_seviyesi_sure,distance_filtreli,ort_hiz,max_hiz,max_hiza_cikma_suresi,max_hiz_nabiz,max_hiz_VS,spo2);
-            f_puts(yazi , &fil);  //yazdir
-
-
-
-
-              ///////////////////////////  Kayit Bitti    ///////////////////////////////////////////////////////
-	  		  f_close(&fil);    // Dosyayi kapa
-	  		  f_mount(NULL, "/", 1); //sd karti unmount et
-	  		  ////////////////  Değişkenleri sıfırlama //////////////////////////////////////////////////////////
-	  		  indx=0;
-	  		  yazma_durum=0;   // Bekleme durmumuna gec, 0 = standby
-
-
-	  		  kosu_ornekleme_periyot=0;
-	  		  kosu_suresi_sayac=0;
-
-	  		  distance=0;
-	  		  distance_old=0;
-	  		  distance_filtreli=0;
-
-              v_filtresiz=0;
-              v_filtreli_birinci_adim=0;
-              v_filtreli_ikinci_adim=0;
-              v_filtreli_ucuncu_adim_yeni=0;
-              v_filtreli_ucuncu_adim_eski=0;
-
-              ivmeyeni=0;
-              ivmeeski=0;
-              ivmefiltered=0;
-
-	  		  enlem_baslangic=0;
-	  		  boylam_baslangic=0;
-
-	  		  deniz_seviyesi_sure=0;
-	  		  ort_hiz=0;
-	  		  max_hiz=0;
-	  		  max_hiza_cikma_suresi=0;
-	  		  max_hiz_nabiz=0;
-	  		  max_hiz_VS=0;
-	  		  ort_nabiz=0;
-
-	  		  SSD1306_Clear();  // LCD yi temizle kayit bitince
-	  		  ///////////////////////////////////////
-	  	  }
-
-	  /////////////////////  LCD REAL TIME DEBUG //////////////////
-	  lcd_spo2=(spo2);  //float basica duzgun gostermedi
-	  lcd_Temperature_DS=Temperature_DS; //float basica duzgun gostermedi
-      ////////////////////////////////////////////
-	  SSD1306_GotoXY (0,0);//LCD imleç konumu değiştirme
-	  sprintf (lcd_yazi,"HR:%d|Ok:%d|VS:%d ",nabiz_filtered3,lcd_spo2,lcd_Temperature_DS);
-	  SSD1306_Puts (lcd_yazi, &Font_7x10, 1);//LCD Yazdırma
-	  /////////////////////////////////////////
-	  SSD1306_GotoXY (0,11);//LCD imleç konumu değiştirme
-	  SSD1306_Puts ("Yol,Hiz,Ivme", &Font_7x10, 1);//LCD Yazdırma
-	  sprintf (lcd_yazi,"%.2f,%.2f,%.2f",distance_filtreli,v_filtreli_ikinci_adim,ivmefiltered);
-	  SSD1306_GotoXY (0,22);//LCD imleç konumu değiştirme
-	  SSD1306_Puts (lcd_yazi, &Font_7x10, 1);//LCD Yazdırma
-	  SSD1306_GotoXY (0,44);//LCD imleç konumu değiştirme
-	  sprintf (lcd_yazi,"Dur:%d;Zam:%d",yazma_durum,kosu_suresi_sayac);
-	  SSD1306_Puts (lcd_yazi, &Font_7x10, 1);//LCD Yazdırma
-	  SSD1306_UpdateScreen(); //display
-
-
-//	  SSD1306_Clear();
+    App_Run();
 
   }
   /* USER CODE END 3 */
@@ -1094,11 +1173,11 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : EXTI_Nabiz_Pin */
-  GPIO_InitStruct.Pin = EXTI_Nabiz_Pin;
+  /*Configure GPIO pin : HEART_RATE_EXTI_Pin */
+  GPIO_InitStruct.Pin = HEART_RATE_EXTI_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(EXTI_Nabiz_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(HEART_RATE_EXTI_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : DS18B20_Pin */
   GPIO_InitStruct.Pin = DS18B20_Pin;
@@ -1114,8 +1193,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(SPI_CS_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : button1_Pin button2_Pin */
-  GPIO_InitStruct.Pin = button1_Pin|button2_Pin;
+  /*Configure GPIO pins : START_BUTTON_Pin STOP_BUTTON_Pin */
+  GPIO_InitStruct.Pin = START_BUTTON_Pin|STOP_BUTTON_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -1136,74 +1215,64 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-		  if (GPIO_Pin == GPIO_PIN_13)
-		  {
-			nabiz_yeni=HAL_GetTick();  //Cihaz açıldığından beri geçen süre milisaniye
-			nabiz_gecen_sure=nabiz_yeni-nabiz_eski; // R-R interval arasi geçen sure
+  if(GPIO_Pin == HEART_RATE_EXTI_Pin)
+  {
+    current_heart_rate_tick = HAL_GetTick();
+    heart_rate_interval_ms = current_heart_rate_tick - previous_heart_rate_tick;
 
-			if(nabiz_gecen_sure>333)  //BPM=180 max,eğer 180 üstü bpm sinyali gelirse değerlendirilmez
-			{
-			nabiz_bpm=60000/nabiz_gecen_sure;  //her tikte anlık nabiz olcuyor
-			}
-			nabiz_eski=nabiz_yeni;//Mevcut değer eski değer olarak kaydedilir.
+    if(heart_rate_interval_ms > HEART_RATE_MIN_INTERVAL_MS)
+    {
+      heart_rate_bpm = 60000U / heart_rate_interval_ms;
+    }
+    previous_heart_rate_tick = current_heart_rate_tick;
 
-			nabiz_filtered=Moving_Average_Compute(nabiz_bpm, &filterStructbpm);
-			nabiz_filtered2=Moving_Average_Compute(nabiz_filtered, &filterStructbpm2);
-			nabiz_filtered3=Moving_Average_Compute(nabiz_filtered2, &filterStructbpm3);
-		  }
+    filtered_heart_rate_stage1 = Moving_Average_Compute(heart_rate_bpm, &heart_rate_filter1);
+    filtered_heart_rate_stage2 = Moving_Average_Compute(filtered_heart_rate_stage1, &heart_rate_filter2);
+    filtered_heart_rate = Moving_Average_Compute(filtered_heart_rate_stage2, &heart_rate_filter3);
+  }
 
-	    //////////////////////////////////////////////////////////////////////////
-	    currentMillis12 = HAL_GetTick();//pb12 button 1
-	                                  //Button Debounce önleme
-	    if (GPIO_Pin == GPIO_PIN_12 && (currentMillis12 - previousMillis12 > 10))
-	    {
-	  	yazma_durum = 1;  //kayit baslatma
-	    previousMillis12 = currentMillis12; //yeni durum artık eskidi
+  current_start_button_tick = HAL_GetTick();
+  if(GPIO_Pin == START_BUTTON_Pin &&
+     (current_start_button_tick - previous_start_button_tick) > BUTTON_DEBOUNCE_MS)
+  {
+    if(logger_state == LOGGER_STATE_IDLE)
+    {
+      logger_state = LOGGER_STATE_START_REQUESTED;
+    }
+    previous_start_button_tick = current_start_button_tick;
+    start_button_pressed = 1;
+  }
 
-	    button1=1; //Kilo,yas counter
-	    }
-
-	    ////////////////////////////////////////////////////////////////////////
-
-	    currentMillis14 = HAL_GetTick();//pb14 button 2
-	    								//Button Debounce önleme
-	    if (GPIO_Pin == GPIO_PIN_14 && (currentMillis14 - previousMillis14 > 10))
-	    {
-	  	yazma_durum = 3;  //kayit bitirme
-	    previousMillis14 = currentMillis14;//yeni durum artık eskidi
-
-	    button2=1; //Onaylama tusu(kilo yas init)
-	    }
-
+  current_stop_button_tick = HAL_GetTick();
+  if(GPIO_Pin == STOP_BUTTON_Pin &&
+     (current_stop_button_tick - previous_stop_button_tick) > BUTTON_DEBOUNCE_MS)
+  {
+    logger_state = LOGGER_STATE_STOP_REQUESTED;
+    previous_stop_button_tick = current_stop_button_tick;
+    stop_button_pressed = 1;
+  }
 }
 
-//  Alinan Yol Hesaplama Haversine formulu
-float CalcGPSDistance(float latitud1, float longitud1, float latitud2, float longitud2){
-    double haversine;
-    double temp;
-    double distancia_puntos;
+static float CalculateGpsDistance(float latitude1, float longitude1, float latitude2, float longitude2)
+{
+  const double lat1_rad = latitude1 * DEG_TO_RAD;
+  const double lon1_rad = longitude1 * DEG_TO_RAD;
+  const double lat2_rad = latitude2 * DEG_TO_RAD;
+  const double lon2_rad = longitude2 * DEG_TO_RAD;
 
-    latitud1  = latitud1  * GRADOS_RADIANES; //Radyana çevirme işlemleri
-    longitud1 = longitud1 * GRADOS_RADIANES;
-    latitud2  = latitud2  * GRADOS_RADIANES;
-    longitud2 = longitud2 * GRADOS_RADIANES;
+  const double haversine = pow(sin(0.5 * (lat2_rad - lat1_rad)), 2.0) +
+      (cos(lat1_rad) * cos(lat2_rad) * pow(sin(0.5 * (lon2_rad - lon1_rad)), 2.0));
+  const double central_angle = 2.0 * asin(MinFloat(1.0f, (float)sqrt(haversine)));
 
-    haversine = (pow(sin((1.0 / 2) * (latitud2 - latitud1)), 2)) + ((cos(latitud1)) * (cos(latitud2)) * (pow(sin((1.0 / 2) * (longitud2 - longitud1)), 2)));
-    temp = 2 * asin(min(1.0, sqrt(haversine))); //C değeri
-    distancia_puntos = RADIO_TERRESTRE * temp;  //D değeri
-
-   return distancia_puntos;
+  return (float)(EARTH_RADIUS_M * central_angle);
 }
 
-float min(float a ,float b) //STM32 C kütüphanelerinde min fonksiyonu yoktur
-{               //Bu yüzden burada hazırlanmıştır.
-	if(a > b) return b;
-	return a;
+static float MinFloat(float a, float b)
+{
+  return (a > b) ? b : a;
 }
-
 /* USER CODE END 4 */
 
 /**
@@ -1217,14 +1286,14 @@ float min(float a ,float b) //STM32 C kütüphanelerinde min fonksiyonu yoktur
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
-	if (htim->Instance == TIM2)
-		{
-			if(yazma_durum!=0) //Program basladiginda saymasin.İlk butona basildiktan sonra saysin
-			{
-		     kosu_suresi_sayac++;
-		     kosu_ornekleme_periyot++;
-			}
-		}
+  if(htim->Instance == TIM2)
+  {
+    if(logger_state != LOGGER_STATE_IDLE)
+    {
+      run_elapsed_time_ms++;
+      run_sample_period_counter_ms++;
+    }
+  }
 
   /* USER CODE END Callback 0 */
   if (htim->Instance == TIM1) {
