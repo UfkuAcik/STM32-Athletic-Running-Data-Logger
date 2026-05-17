@@ -1,4 +1,4 @@
-# STM32 BlackPill Runner Data Logger
+# STM32 BlackPill Based Data Logger For Runners
 
 This graduation project is an embedded data logger designed to monitor short-distance runners in real time. It uses an STM32 BlackPill development board and external sensor modules to collect physiological, environmental, and motion-related data during a run.
 
