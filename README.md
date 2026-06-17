@@ -6,6 +6,25 @@ The firmware measures blood oxygen saturation, heart rate, body temperature, GPS
 
 > Note: This project is intended for education and prototyping. It is not a calibrated medical device and should not be used for diagnosis, treatment, or professional medical decision-making.
 
+## Table of Contents
+
+- [Project Summary](#project-summary)
+- [Hardware Used](#hardware-used)
+- [Pin Connections](#pin-connections)
+- [Peripheral Configuration](#peripheral-configuration)
+- [System Architecture](#system-architecture)
+- [Operating Logic](#operating-logic)
+- [Software Flow](#software-flow)
+- [Sensor Operation](#sensor-operation)
+- [SD Card Log Format](#sd-card-log-format)
+- [Filtering and Calculations](#filtering-and-calculations)
+- [OLED Display Output](#oled-display-output)
+- [Folder Structure](#folder-structure)
+- [Build and Flash](#build-and-flash)
+- [Usage Notes](#usage-notes)
+- [Future Improvements](#future-improvements)
+- [License and Third-Party Code](#license-and-third-party-code)
+
 ## Project Summary
 
 | Feature | Description |
@@ -37,7 +56,7 @@ The firmware measures blood oxygen saturation, heart rate, body temperature, GPS
 
 ## Pin Connections
 
-The pin assignments below are taken from `Birlestirme_F4.ioc` and `Core/Inc/main.h`.
+The pin assignments below are taken from `Src/Birlestirme_F4.ioc` and `Src/Core/Inc/main.h`.
 
 | Module / Function | STM32 pin | Peripheral / Mode | Description |
 | --- | --- | --- | --- |
@@ -105,7 +124,7 @@ flowchart LR
 
 ## Software Flow
 
-The main application flow is implemented in `Core/Src/main.c`.
+The main application flow is implemented in `Src/Core/Src/main.c`.
 
 | Function | Responsibility |
 | --- | --- |
@@ -297,17 +316,19 @@ State:<logger_state>;Time:<elapsed_ms>
 ## Folder Structure
 
 ```text
-Core/
-  Inc/                         Header files and pin definitions
-  Src/                         Main application, sensor drivers, and helper code
-FATFS/
-  App/                         FatFs application layer
-  Target/                      SD card disk I/O bridge
-Drivers/                       STM32 HAL and CMSIS drivers
-Middlewares/Third_Party/       FatFs and FreeRTOS sources
-Birlestirme_F4.ioc             STM32CubeMX project and pin configuration
-STM32F411CEUX_FLASH.ld         Flash linker script
+Src/                           Main code directory containing the STM32CubeIDE project
+  Core/
+    Inc/                       Header files and pin definitions
+    Src/                       Main application, sensor drivers, and helper code
+  FATFS/
+    App/                       FatFs application layer
+    Target/                    SD card disk I/O bridge
+  Drivers/                     STM32 HAL and CMSIS drivers
+  Middlewares/Third_Party/     FatFs and FreeRTOS sources
+  Birlestirme_F4.ioc           STM32CubeMX project and pin configuration
+  STM32F411CEUX_FLASH.ld       Flash linker script
 README.md                      Project documentation
+LICENSE                        GNU GPLv3 License file
 ```
 
 ## Build and Flash
