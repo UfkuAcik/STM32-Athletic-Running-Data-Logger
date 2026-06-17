@@ -341,4 +341,15 @@ README.md                      Project documentation
 
 ## License and Third-Party Code
 
-This project includes STM32 HAL, FatFs, `lwgps`, SSD1306, BME280, and MAX30102 driver/library code. Keep the license terms from each third-party source when modifying or redistributing the project.
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0-or-later)**. 
+
+Because this project statically links and includes third-party libraries that are licensed under the GPLv3 (specifically the `ssd1306` and `BME280` driver libraries), the entire combined firmware work must be distributed under the terms of the GPLv3 to comply with its copyleft obligations.
+
+It also includes other third-party code with permissive licenses:
+- **STM32 HAL / CMSIS**: BSD-3-Clause / ST SLA
+- **FatFs**: Custom permissive license
+- **FreeRTOS**: MIT License
+- **lwgps**: MIT License
+- **MAX30102 driver**: MIT / Permissive
+
+Please ensure you keep the original license terms and copyright notices from each third-party source when modifying or redistributing the project, in addition to complying with the GPLv3 for the overall project.
